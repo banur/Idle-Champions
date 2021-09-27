@@ -24,6 +24,12 @@ global ScriptVersion := "2021.09.24.1" ; USER: Cut and paste these in Discord wh
 ; // 20210919 1 - started reworking the Read First tab
 ; //            - added buttons and code to launch stuff off the resources tab
 ; // 20210924 1 - Initial fork update
+; // 20210926 1 - changed times to hh:mm:ss;
+; //              replaced CD leveling with combobox;
+; //              added first time default to read first, stats otherwise;
+; //              merged huan's early stacking;
+; //              added status bar - needs some more fine tuning
+; //
 ; /////////////////////////////////////////////////////////////////////////////////////////////////
 
 SetWorkingDir, %A_ScriptDir% ; The working directory is the Script Directory, log files are there
@@ -85,42 +91,47 @@ global gAreaLow      := GetSettingFromINI("AreaLow", 30)           ;Farm Brivs S
 global gMinStackZone := GetSettingFromINI("MinStackZone", 25)      ;Lowest zone SB stacks can be farmed on
 global gSBTargetStacks := GetSettingFromINI("SBTargetStacks", 400) ;Target Haste stacks count
 global gDashSleepTime := GetSettingFromINI("DashSleepTime", 6000)  ;Dash (Sandie's speed ability!) wait max time
+global gDashWaitZone := GetSettingFromINI("DashWaitZone", 0)       ;Delay Dash to specific zone for consistent potion usage
 global gHewUlt       := GetSettingFromINI("HewUlt", 6)             ;Hew's ult key
+global gDashAfterStack := GetSettingFromINI("DashAfterStack", 0)   ;bool - Delay Dash for early stacking
 global gbSpamUlts    := GetSettingFromINI("Ults", 1)               ;bool - whether to spam ults
 global gbCancelAnim  := GetSettingFromINI("BrivSwap", 1)           ;bool - Briv swap-out to cancel animation
 global gAvoidBosses  := GetSettingFromINI("AvoidBosses", 1)        ;bool - Briv swap-out to avoid bosses
-global gbCDLeveling  := GetSettingFromINI("ClickLeveling", 1)      ;bool - Click damage(CD) levelling toggle
+global gCDLevelingKey:= GetSettingFromINI("CDLevelingKey", "`` (US)")         ;Click damage(CD) levelling key
 global gb100xCDLev   := GetSettingFromINI("CtrlClickLeveling", 0)  ;bool - 100x with CTRL key CD levelling toggle
 global gbSFRecover   := GetSettingFromINI("StackFailRecovery", 0)  ;bool - Stack fail recovery toggle  TBD what this means
-global gStackFailConvRecovery := GetSettingFromINI("StackFailConvRecovery", 0) ;Stack fail recovery toggle
-global gSwapSleep := GetSettingFromINI("SwapSleep", 1500) ;Briv swap sleep time
-global gRestartStackTime := GetSettingFromINI("RestartStackTime", 12000) ;Restart stack sleep time
+global gStackFailConvRecovery := GetSettingFromINI("StackFailConvRecovery", 0)      ;Stack fail recovery toggle
+global gSwapSleep := GetSettingFromINI("SwapSleep", 1500)                           ;Briv swap sleep time
+global gRestartStackTime := GetSettingFromINI("RestartStackTime", 12000)            ;Restart stack sleep time
 global gModronResetCheckEnabled := GetSettingFromINI("ModronResetCheckEnabled" , 0) ;Modron Reset Check
-global gSBTimeMax := GetSettingFromINI("SBTimeMax", 60000) ;Normal SB farm max time
-global gDoChests := GetSettingFromINI("DoChests", 0) ;Enable servecalls to open chests during stack restart
-global gSCMinGemCount := GetSettingFromINI("SCMinGemCount", 0) ;Minimum gems to save when buying chests
-global gSCBuySilvers := GetSettingFromINI("SCBuySilvers", 0) ;Buy silver chests when can afford this many
-global gSCSilverCount := GetSettingFromINI("SCSilverCount", 0) ;Open silver chests when you have this many
-global gSCBuyGolds := GetSettingFromINI("SCBuyGolds", 0) ;Buy gold chests when can afford this many
-global gSCGoldCount := GetSettingFromINI("SCGoldCount", 0) ;Open silver chests when you have this many
+global gSBTimeMax := GetSettingFromINI("SBTimeMax", 60000)                          ;Normal SB farm max time
+global gDoChests := GetSettingFromINI("DoChests", 0)                                ;Enable servecalls to open chests during stack restart
+global gSCMinGemCount := GetSettingFromINI("SCMinGemCount", 0)                      ;Minimum gems to save when buying chests
+global gSCBuySilvers := GetSettingFromINI("SCBuySilvers", 0)                        ;Buy silver chests when can afford this many
+global gSCSilverCount := GetSettingFromINI("SCSilverCount", 0)                      ;Open silver chests when you have this many
+global gSCBuyGolds := GetSettingFromINI("SCBuyGolds", 0)                            ;Buy gold chests when can afford this many
+global gSCGoldCount := GetSettingFromINI("SCGoldCount", 0)                          ;Open silver chests when you have this many
 
 ;Intall locations
 global strSTMpath := ""
 global strEGSpath := explorer.exe "com.epicgames.launcher://apps/40cb42e38c0b4a14a1bb133eb3291572?action=launch&silent=true"
 global gInstallPath := GetSettingFromINI("GameInstallPath", strEGSpath)
 
+global gFirstTime := GetSettingFromINI("FirstTime", 1)
+
 ;variable for correctly tracking stats during a failed stack, to prevent fast/slow runs to be thrown off
 global gStackFail := 0
 
 ;globals for various timers
+global TimePoint       := 20000101000000                ; some arbitrary point as base reference for converting ticks into hhmmss
 global gSlowRunTime    :=         
-global gFastRunTime    := 100
+global gFastRunTime    := 22000101000000
 global gRunStartTime   :=
 global gTotal_RunCount := 0
 global gStartTime      := 
 global gPrevLevelTime  :=    
 global gPrevRestart    :=
-global gprevLevel      :=
+global gPrevLevel      :=
 global g_ZoneTime      := 0    ; variable to hold the calculated value of the time spent in the current zone
 
 ;globals for reset tracking
@@ -139,6 +150,8 @@ global gStackCountSB   :=
 global gCoreTargetArea := ;global to help protect against script attempting to stack farm immediately before a modron reset
 
 global gTestReset := 0 ;variable to test a reset function not ready for release
+global gLevelKeyIndex       := 0 ;Index of the click damage leveling key
+global gLevelKeyVar         := ""
 
 global wTitle := "Zees GemFarmer Modron for EGS (" . ScriptVersion . ")"
 LogFMsg("VERSION INFO: ModronGUI.ahk - " . wTitle)
@@ -159,12 +172,19 @@ PreciseTime := DayTime . "." . A_MSec
 
 global GUITabW := 500 ; width of GUI TAb control
 global GUITabT := 50  ; Y offset (ie TOP) of GUI Tab control
-Gui, MyWindow:Font, cSilver s11 ;
+Gui, MyWindow:Font, cSilver s11                                         ; works for black background but not for edit boxes, added black before edit boxes
 Gui, MyWindow:Add, Button, x10 y10 w100 gSave_Clicked, Save
 Gui, MyWindow:Add, Button, x120 y10 w100 gRun_Clicked, Run
 Gui, MyWindow:Add, Button, x230 y10 w100 gPause_Clicked, Pause
 Gui, MyWindow:Add, Button, x340 y10 w100 gReload_Clicked, Reload
-Gui, MyWindow:Add, Tab3, x5 y%GUITabT% w%GUITabW%, Read First|Settings|Help|Stats|Debug|Resources|ZDebug
+if (gFirstTime) ; default to stats tab once settings are saved
+{
+    Gui, MyWindow:Add, Tab3, x5 y%GUITabT% w%GUITabW%, Read First||Settings|Help|Stats|Debug|Resources|ZDebug
+}
+else
+{
+    Gui, MyWindow:Add, Tab3, x5 y%GUITabT% w%GUITabW%, Read First|Settings|Help|Stats||Debug|Resources|ZDebug
+}
 
 Gui, Tab, Read First
 global GUITabTxtW := GUITabW - 30
@@ -189,7 +209,7 @@ Gui, MyWindow:Add, Text, x15 y+3 w%GUITabTxtW%,  % ++iGUIInstctr . ".  " .  " Pr
 strNotS1  := "To adjust your settings after the run starts, first use the pause hotkey, ~(Shift `), then adjust & save settings."
 strNotS4  := "Recommended SB stack level : [Modron Reset Zone] - (2 + 2*X), where X is your Briv skip level (ie 1x 2x 3x 4x)"
 strNotS6  := "Script communicates directly with Idle Champions play servers to recover from a failed stacking and for when Modron resets to the World Map."
-strNotS10 := "Recommended Briv swap `sleep time is betweeb 1500 - 3000. If you are seeing Briv's " 
+strNotS10 := "Recommended Briv swap sleep time is betweeb 1500 - 3000. If you are seeing Briv's " 
            . "landing animation then increase the the swap sleep time. If Briv is not back in the" 
            . " formation before monsters can be killed then decrease the swap sleep time."
 iGUIInstctr := 0
@@ -205,12 +225,12 @@ Gui, MyWIndow:Add, Text, x15 y+2 w%GUITabTxtW%, % ++iGUIInstctr . ".  " .  "The 
 Gui, MyWIndow:Add, Text, x15 y+2 w%GUITabTxtW%, % ++iGUIInstctr . ".  " .  "Disable manual resets to recover from failed Briv stack conversions when running event free plays."
 Gui, MyWIndow:Add, Text, x15 y+2 w%GUITabTxtW%, % ++iGUIInstctr . ".  " .  strNotS10
 strKI2 := "Using Hew's ult throughout a run with Briv swapping can result in Havi's ult being trig" 
-       . "gered instead. Consider removing Havi from formation save slot 3, in game `hotkey ""E""."
+       . "gered instead. Consider removing Havi from formation save slot 3, in game hotkey ""E""."
 strKI3 := "Conflict between Epic Games Store and IdleCombos.exe script. Close IdleCombos if Briv " 
        . "Restart Stacking as EGS will see IdleCombos as an instance of IC. "
 iGUIInstctr := 0
 Gui, MyWindow:Add, Text, x15 y+10, Known Issues:
-Gui, MyWindow:Add, Text, x15 y+2, 1. Cannot fully interact with `GUI `while script is running.
+Gui, MyWindow:Add, Text, x15 y+2, 1. Cannot fully interact with GUI while script is running.
 Gui, MyWindow:Add, Text, x15 y+2 w%GUITabTxtW%, % ++iGUIInstctr . ".  " .  strKI2
 Gui, MyWindow:Add, Text, x15 y+2 w%GUITabTxtW%, % ++iGUIInstctr . ".  " .  strKI3 
 
@@ -220,7 +240,8 @@ Gui, MyWindow:Add, Text, x15 y%GUITabTxtT% w%GUITabTxtW%, Champ Seats to level w
 ;Gui, MyWindow:Add, Text, x15 y30 w120, Seats to level with Fkeys: ;, Background2C2F33
 Loop, 12
 {
-    i := gSeatToggle[A_Index]
+    i := gSeatToggle[A_Index]               ; doesn't seem to work, i ends up empty
+    ; msgbox %i%
     if (A_Index = 1)
     Gui, MyWindow:Add, Checkbox, vCheckboxSeat%A_Index% Checked%i% x15 y+5 w60, S%A_Index%
     Else if (A_Index <= 6)
@@ -230,46 +251,78 @@ Loop, 12
     Else
     Gui, MyWindow:Add, Checkbox, vCheckboxSeat%A_Index% Checked%i% x+5 w60, S%A_Index%
 }
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewContinuedLeveling x15 y+10 w50 BackGround2C2F33, % gStopLevZone
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Stop levelling Champs at/after this zone
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewgAreaLow x15 y+10 w50, % gAreaLow
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Farm SB stacks AFTER this zone
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewgMinStackZone x15 y+10 w50, % gMinStackZone
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Minimum zone Briv can farm SB stacks on
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSBTargetStacks x15 y+10 w50, % gSBTargetStacks
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Target Haste stacks for next run
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewgSBTimeMax x15 y+10 w50, % gSBTimeMax
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Maximum time (ms) script will spend farming SB stacks
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewDashSleepTime x15 y+10 w50, % gDashSleepTime
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Maximum time (ms) script will wait for Dash (0 disables)
+Gui, MyWindow:Add, Checkbox, vgDashAfterStack Checked%gDashAfterStack% x15 y+10, Dash wait AFTER stacking, not at start of run
+Gui, MyWindow:Font, cBlack s11
+Gui, MyWindow:Add, Edit, vgDashWaitZone x15 y+7 w50, % gDashWaitZone
+Gui, MyWindow:Font, cSilver s11
+Gui, MyWindow:Add, Text, x+5, Delay DashWait by this many zones
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewHewUlt x15 y+10 w50, % gHewUlt
-Gui, MyWindow:Add, Text, x+5, `Hew's ultimate key (0 disables)
+Gui, MyWindow:Font, cSilver s11
+Gui, MyWindow:Add, Text, x+5, Hew's ultimate key (0 disables)
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewRestartStackTime x15 y+10 w50, % gRestartStackTime
-Gui, MyWindow:Add, Text, x+5, `Time (ms) client remains closed for Briv Restart Stack (0 disables)
-Gui, MyWindow:Add, Checkbox, vgbSpamUlts Checked%gbSpamUlts% x15 y+10, Use ults 2-9 after intial champion leveling
-Gui, MyWindow:Add, Checkbox, vgbCancelAnim Checked%gbCancelAnim% x15 y+5, Swap to 'e' formation to cancel Briv's jump animation
+Gui, MyWindow:Font, cSilver s11
+Gui, MyWindow:Add, Text, x+5, Time (ms) client remains closed for Briv Restart Stack (0 disables)
+Gui, MyWindow:Add, Checkbox, vgbSpamUlts Checked%gbSpamUlts% x15 y+12, Use ults 2-9 after intial champion leveling
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSwapSleep x15 y+5 w40, % gSwapSleep
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Briv swap sleep time (ms)
-Gui, MyWindow:Add, Checkbox, vgAvoidBosses Checked%gAvoidBosses% x15 y+10, Swap to 'e' formation when `on boss zones
-Gui, MyWindow:Add, Checkbox, vgbCDLeveling Checked%gbCDLeveling% x15 y+5, `Uncheck `if using a familiar `on `click damage
-Gui, MyWindow:Add, Checkbox, vgb100xCDLev Checked%gb100xCDLev% x15 y+5, Enable ctrl (x100) leveling of `click damage
+Gui, MyWindow:Add, Checkbox, vgAvoidBosses Checked%gAvoidBosses% x15 y+12, Swap to 'e' formation when `on boss zones
+Gui, MyWindow:Add, DropDownList, vCDLevelingKeyDDL w120, `` (US)||{SC027} (Intl.)|familiar (no key)
+Gui, MyWindow:Add, Text, x+5, Select leveling key for click damage
+Gui, MyWindow:Add, Checkbox, vgb100xCDLev Checked%gb100xCDLev% x15 y+12, Enable ctrl (x100) leveling of click damage
 Gui, MyWindow:Add, Checkbox, vgbSFRecover Checked%gbSFRecover% x15 y+5, Enable manual resets to recover from failed Briv stacking
 Gui, MyWindow:Add, Checkbox, vgStackFailConvRecovery Checked%gStackFailConvRecovery% x15 y+5, Enable manual resets to recover from failed Briv stack conversion
-Gui, MyWindow:Add, Checkbox, vgModronResetCheckEnabled Checked%gModronResetCheckEnabled% x15 y+5, Have script check for Modron reset level
 Gui, MyWindow:Add, Checkbox, vgDoChests Checked%gDoChests% x15 y+10, Enable server calls to buy and open chests during stack restart
-Gui, MyWindow:Add, Edit, vNewSCMinGemCount x15 y+10 w100, % gSCMinGemCount
+Gui, MyWindow:Font, cBlack s11
+Gui, MyWindow:Add, Edit, vNewSCMinGemCount x15 y+7 w100, % gSCMinGemCount
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, Maintain this many gems when buying chests
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSCBuySilvers x15 y+10 w50, % gSCBuySilvers
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, When there are sufficient gems, buy this many silver chests
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSCSilverCount x15 y+10 w50, % gSCSilverCount
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, When there are this many silver chests, open them
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSCBuyGolds x15 y+10 w50, % gSCBuyGolds
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, When there are sufficient gems, buy this many Gold chests
+Gui, MyWindow:Font, cBlack s11
 Gui, MyWindow:Add, Edit, vNewSCGoldCount x15 y+10 w50, % gSCGoldCount
+Gui, MyWindow:Font, cSilver s11
 Gui, MyWindow:Add, Text, x+5, When there are this many gold chests, open them
 Gui, MyWindow:Add, Button, x15 y+20 gChangeInstallLocation_Clicked, Change Install Path
-strGUI := "Default installation path may be EGS client specific. If launch fails, make a " 
-        . "shortcut through EGS and replace default path with new app launcher `ID."
+strGUI := "Default installation path may be EGS client specific. If launch fails, make a " ; too long for window
+        . "shortcut through EGS and replace default path with new app launcher ID."
 Gui, MyWindow:Add, Text, x+5 w%GUITabTxtW%, %strGUI%
 
 Gui, Tab, Help
@@ -303,8 +356,8 @@ Gui, MyWindow:Add, Text, vgSwapSleepID x+2 w%GUITabTxtW%, % gSwapSleep
 Gui, MyWindow:Add, Text, x15 y+5, Swap to 'e' formation when on boss zones:
 Gui, MyWindow:Add, Text, vgAvoidBossesID x+2 w%GUITabTxtW%, % gAvoidBosses
 Gui, MyWindow:Add, Text, x15 y+5, Using a familiar on click damage:
-Gui, MyWindow:Add, Text, vgbCDLevelingID x+2 w%GUITabTxtW%, % gbCDLeveling
-Gui, MyWindow:Add, Text, x15 y+5, Enable ctrl (x100) leveling of `click damage:
+Gui, MyWindow:Add, Text, vgCDLevelingKeyID x+2 w%GUITabTxtW%, % gCDLevelingKey
+Gui, MyWindow:Add, Text, x15 y+5, Enable ctrl (x100) leveling of click damage:
 Gui, MyWindow:Add, Text, vgb100xCDLevID x+2 w%GUITabTxtW%, % gb100xCDLev
 Gui, MyWindow:Add, Text, x15 y+5, Enable manual resets to recover from failed Briv stacking:
 Gui, MyWindow:Add, Text, vgbSFRecoverID x+2 w%GUITabTxtW%, % gbSFRecover
@@ -334,31 +387,31 @@ Gui, Tab, Stats
 Gui, MyWindow:Font, w700
 Gui, MyWindow:Add, Text, x15 y%GUITabTxtT%, Stats updated continuously (mostly):
 Gui, MyWindow:Font, w400
-Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, SB Stack `Count: 
+Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, SB Stack Count: 
 Gui, MyWindow:Add, Text, vgStackCountSBID x+2 w50, % gStackCountSB
 ;Gui, MyWindow:Add, Text, vReadSBStacksID x+2 w200,
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Haste Stack `Count:
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Haste Stack Count:
 Gui, MyWindow:Add, Text, vgStackCountHID x+2 w50, % gStackCountH
 ;Gui, MyWindow:Add, Text, vReadHasteStacksID x+2 w200,
-Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, Current `Run `Time:
+Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, Current Run Time:
 Gui, MyWindow:Add, Text, vdtCurrentRunTimeID x+2 w50, 0 ;% dtCurrentRunTime
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Total `Run `Time:
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Total Run Time:
 Gui, MyWindow:Add, Text, vdtTotalTimeID x+2 w50, % dtTotalTime
 Gui, MyWindow:Font, w700
 Gui, MyWindow:Add, Text, x15 y+10, Stats updated once per run:
 Gui, MyWindow:Font, w400
-Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, Total `Run `Count:
+Gui, MyWindow:Add, Text, x15 y+10 %statTabTxtWidth%, Total Run Count:
 Gui, MyWindow:Add, Text, vgTotal_RunCountID x+2 w50, % gTotal_RunCount
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Previous `Run `Time:
-Gui, MyWindow:Add, Text, vgPrevRunTimeID x+2 w50, % gPrevRunTime
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fastest `Run `Time:
-Gui, MyWindow:Add, Text, vgFastRunTimeID x+2 w50, 
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Slowest `Run `Time:
-Gui, MyWindow:Add, Text, vgSlowRunTimeID x+2 w50, % gSlowRunTime
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Avg. `Run `Time:
-Gui, MyWindow:Add, Text, vgAvgRunTimeID x+2 w50, % gAvgRunTime
-Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fail `Run `Time:
-Gui, MyWindow:Add, Text, vgFailRunTimeID x+2 w50, % gFailRunTime    
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Previous Run Time:
+Gui, MyWindow:Add, Text, vgPrevRunTimeID x+2 w50, % gPrevRunTimeF
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fastest Run Time:
+Gui, MyWindow:Add, Text, vgFastRunTimeID x+2 w50, % gFastRunTimeF
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Slowest Run Time:
+Gui, MyWindow:Add, Text, vgSlowRunTimeID x+2 w50, % gSlowRunTimeF
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Avg. Run Time:
+Gui, MyWindow:Add, Text, vgAvgRunTimeID x+2 w50, % gAvgRunTimeF
+Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fail Run Time:
+Gui, MyWindow:Add, Text, vgFailRunTimeID x+2 w50, % gFailRunTimeF
 Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fail Stack Conversion:
 Gui, MyWindow:Add, Text, vgFailedStackConvID x+2 w50, % gFailedStackConv
 Gui, MyWindow:Add, Text, x15 y+2 %statTabTxtWidth%, Fail Stacking:
@@ -378,7 +431,7 @@ Gui, MyWINdow:Add, Text, x15 y+2, Red Gems per hour:
 Gui, MyWindow:Add, Text, vRedGemsPhrID x+2 w200, % RedGemsPhr
 Gui, MyWindow:Font, cSilver w400
 ;Gui, MyWindow:Font, w700
-Gui, MyWindow:Add, Text, x15 y+10, `Loop: 
+Gui, MyWindow:Add, Text, x15 y+10, Loop: 
 Gui, MyWindow:Add, Text, vgLoopID x+2 w450, Initialized...Waiting for Run Command
 global hZLoop := 0
 Gui, MyWindow:Font, cSilver s9
@@ -396,7 +449,7 @@ if (gDoChests)
     Gui, MyWindow:Add, Text, vgSCRedRubiesSpentStartID x+2 w200,
     Gui, MyWindow:Add, Text, x15 y+5, Starting Silvers Opened: 
     Gui, MyWindow:Add, Text, vgSCSilversOpenedStartID x+2 w200,
-    Gui, MyWindow:Add, Text, x15 y+5, Starting Golds Opened: 
+    Gui, MyWindow:Add, Text, x15 y+5, Starting Golds Opened:
     Gui, MyWindow:Add, Text, vgSCGoldsOpenedStartID x+2 w200,    
     Gui, MyWindow:Add, Text, x15 y+5, Silvers Opened: 
     Gui, MyWindow:Add, Text, vgSCSilversOpenedID x+2 w200,
@@ -492,9 +545,8 @@ Gui, MyWindow:Add, Button, x15 y+15 w100 gSoul_Clicked, Soul's
 Gui, MyWindow:Add, Button, x15 y+15 w100 gFenomas_Clicked, Fenomas's
 Gui, MyWindow:Add, Button, x15 y+15 w100 gXeio_Clicked, Xeio's Code Redeemer
 
-;banur:
-;clipboard := "copy paste version"
-;msgbox "version copied! paste into discord"
+if (gCDLevelingKey)
+    GuiControl, ChooseString, CDLevelingKeyDDL, %gCDLevelingKey%
 
 global Zeelog := CurrentTime . " Initializing ..."
 global hZlog := 0
@@ -505,15 +557,20 @@ Gui, MyWindow:Add, Edit, r40 w%GUITabZDBW% x9 y%GUITabTxtT% HwndhZlog vZlog Read
 Gui, MyWindow:Font, cSilver s11 ;
 Gui, MyWindow:Font, w700
 
-;server call functions and variables Included after GUI so chest tabs maybe non optimal way of doing it
-#include IC_ServerCallFunctions.ahk
-
 Gui, MyWindow:Show
+
+
+Gui, Add, StatusBar                 ; need to shrink main window to not overlap when loading
+SB_SetParts(20,300)
+
+SB_SetText("`tNot running." , 2, 2)
+SB_SetText("`tSpace for sth else.." , 3, 2)
+SB_SetText(" " , 1, 2)
 
 Gui, InstallGUI:New
 Gui, InstallGUI:Add, Edit, vNewInstallPath x15 y+10 w%GUITabTxtW% r5, % gInstallPath
-Gui, InstallGUI:Add, Button, x15 y+25 gInstallOK_Clicked, Save and `Close
-Gui, InstallGUI:Add, Button, x+100 gInstallCancel_Clicked, `Cancel
+Gui, InstallGUI:Add, Button, x15 y+25 gInstallOK_Clicked, Save and Close
+Gui, InstallGUI:Add, Button, x+100 gInstallCancel_Clicked, Cancel
 
 InstallCancel_Clicked:
 {
@@ -629,6 +686,11 @@ Save_Clicked:
     gDashSleepTime := NewDashSleepTime
     GuiControl, MyWindow:, DashSleepTimeID, % gDashSleepTime
     IniWrite, %gDashSleepTime%, UserSettings.ini, Section1, DashSleepTime
+    GuiControl, MyWindow:, gDashAfterStackID, % gDashAfterStack
+    IniWrite, %gDashAfterStack%, UserSettings.ini, Section1, DashAfterStack
+    GuiControl, MyWindow:, gDashWaitZone, % gDashWaitZone
+    IniWrite, %gDashWaitZone%, UserSettings.ini, Section1, DashWaitZone
+    gContinuedLeveling := NewContinuedLeveling
     gStopLevZone := NewContinuedLeveling
     GuiControl, MyWindow:, gStopLevZoneID, % gStopLevZone
     IniWrite, %gStopLevZone%, UserSettings.ini, Section1, ContinuedLeveling
@@ -641,8 +703,8 @@ Save_Clicked:
     IniWrite, %gbCancelAnim%, UserSettings.ini, Section1, BrivSwap
     GuiControl, MyWindow:, gAvoidBossesID, % gAvoidBosses
     IniWrite, %gAvoidBosses%, UserSettings.ini, Section1, AvoidBosses
-    GuiControl, MyWindow:, gbCDLevelingID, % gbCDLeveling
-    IniWrite, %gbCDLeveling%, UserSettings.ini, Section1, ClickLeveling
+    GuiControlGet, CDLKey ,, CDLevelingKeyDDL                   ; grab the selected value not the extracted index
+    IniWrite, %CDLKey%, UserSettings.ini, Section1, CDLevelingKey
     GuiControl, MyWindow:, gb100xCDLevID, % gb100xCDLev
     IniWrite, %gb100xCDLev%, UserSettings.ini, Section1, CtrlClickLeveling
     GuiControl, MyWindow:, gbSFRecoverID, % gbSFRecover
@@ -655,8 +717,6 @@ Save_Clicked:
     gRestartStackTime := NewRestartStackTime
     GuiControl, MyWindow:, gRestartStackTimeID, % gRestartStackTime
     IniWrite, %gRestartStackTime%, UserSettings.ini, Section1, RestartStackTime
-    GuiControl, MyWindow:, gModronResetCheckEnabledID, % gModronResetCheckEnabled
-    IniWrite, %gModronResetCheckEnabled%, UserSettings.ini, Section1, ModronResetCheckEnabled
     GuiControl, MyWindow:, gDoChestsID, % gDoChests
     IniWrite, %gDoChests%, UserSettings.ini, Section1, DoChests
     gSCMinGemCount := NewSCMinGemCount
@@ -682,6 +742,7 @@ Save_Clicked:
     gSCGoldCount := 99
     GuiControl, MyWindow:, gSCGoldCountID, % gSCGoldCount
     IniWrite, %gSCGoldCount%, UserSettings.ini, Section1, SCGoldCount
+    IniWrite, 0, UserSettings.ini, Section1, FirstTime
     return
 }
 
@@ -695,6 +756,7 @@ Run_Clicked:
 {
     gStartTime := A_TickCount
     gRunStartTime := A_TickCount
+    SB_SetIcon(A_ScriptDir "\go.ico")
     SetupStrings()
     GemFarm()
     return
@@ -703,13 +765,14 @@ Run_Clicked:
 Pause_Clicked:
 {
     Pause
+    SB_SetIcon(A_ScriptDir "\pause.ico")
     gPrevLevelTime := A_TickCount
     return
 }
 
 MyWindowGuiClose() 
 {
-    MsgBox 4,, Are you sure you want to `exit?
+    MsgBox 4,, Are you sure you want to exit?
     IfMsgBox Yes
     ExitApp
     IfMsgBox No
@@ -718,6 +781,7 @@ MyWindowGuiClose()
 
 $~::
     Pause
+    SB_SetIcon(A_ScriptDir "\pause.ico")
     gPrevLevelTime := A_TickCount
 return
 
@@ -817,7 +881,7 @@ SafetyCheck(delay := 5000)
 
             ;the script doesn't update GUI with elapsed time while IC is loading, opening the address, or readying base address, to minimize use of CPU.
         ; TODO: Separate Gui from operation
-            UpdateStatusEdit("Opening Process") ; GuiControl, MyWindow:, gloopID, Opening `Process
+            UpdateStatusEdit("Opening Process") ; GuiControl, MyWindow:, gloopID, Opening Process
             Sleep gOpenProcess
             OpenProcess()
             UpdateStatusEdit("Loading Module Base") ; GuiControl, MyWindow:, gloopID, Loading Module Base
@@ -828,7 +892,7 @@ SafetyCheck(delay := 5000)
             LoadingZoneREV()
             if (gbSpamUlts)
                 DoUlts()
-                    ;reset timer for checking if IC is stuck on a zone.
+            ;reset timer for checking if IC is stuck on a zone.
             gPrevLevelTime := A_TickCount
         }
         lastRan := A_TickCount
@@ -855,6 +919,8 @@ SafetyCheck()
 ;       look into processkill if we really want to kill the IC process
 CloseIC()
 {
+    DirectedInput("w")                                      ; Forcing W formation on close to ensure proper offline stacking
+    sleep 100
     PostMessage, 0x112, 0xF060,,, ahk_exe IdleDragons.exe   ; TOODO: what message is this sending to the IC executable?
     StartTime := A_TickCount
     ElapsedTime := 0
@@ -868,6 +934,8 @@ CloseIC()
     While (WinExist("ahk_exe IdleDragons.exe")) 
     {
         UpdateStatusEdit("Forcing IC Close") ;GuiControl, MyWindow:, gloopID, Forcing IC Close
+        DirectedInput("w")
+        sleep 100
         PostMessage, 0x112, 0xF060,,, ahk_exe IdleDragons.exe
         sleep 1000
         ElapsedTime := UpdateElapsedTime(StartTime)
@@ -923,23 +991,47 @@ LevelChampByID(ChampID := 1, Lvl := 0, i := 5000, j := "q", seat := 1)
 DoDashWait()
 {
     ReleaseStuckKeys()
-    DirectedInput("g")
-    LevelChampByID(47, 120, 5000, "q", 6)
+    ;precondition - party must already be stopped ('g' turned off), this function only deals with waiting itself
+    ;   (and using the waiting time to level up champs if at level 1)
+
+    if (gDashWaitZone and gDashAfterStack) {
+        UpdateStatusEdit("Transitioning to DashWait zone")
+        while (ReadCurrentZone(1) <= gAreaLow + gDashWaitZone) {
+            gLevel_Number := ReadCurrentZone(1)
+            StuffToSpam(1, gLevel_Number, 0, "e")
+        }
+    }
+
+    gLevel_Number := ReadCurrentZone(1)
+
+    if (gLevel_Number == 1) {
+        ; level up shandie
+        LevelChampByID(47, 120, 5000, "q", 6)
+    }
+    ; now the timer for dash is running
     StartTime := A_TickCount
     ElapsedTime := 0
-    LevelChampByID(58, 80, 5000, "q", 5)
+    if (gLevel_Number == 1)
+    {
+        ; level up briv, needed to read his stacks
+        LevelChampByID(58, 80, 5000, "q", 5)
+    }
+    ; let the multiplier "settle" before using it. When stacking mid-run, the values DO change for a short period
+    ; after restart (theory: first read is before potions are applied, second is with potions), so first read sees
+    ; lower value, next read few ms after that sees higher value and interprets it as "multiplier increased, so we
+    ; have dash and our work is done"
+    sleep 1000
     gTime := ReadTimeScaleMultiplier(1)
-    if (gTime < 1)
-    gTime := 1
+    if (gTime < 1) {
+        gTime := 1
+    }
     DashSpeed := gTime * 1.4
     modDashSleep := gDashSleepTime / gTime
     if (modDashSleep < 1)
-    modDashSleep := gDashSleepTime
-    GuiControl, MyWindow:, NewDashSleepID, % modDashSleep
-    if (gStackFailConvRecovery)
     {
-        CheckForFailedConv()
+        modDashSleep := gDashSleepTime
     }
+    GuiControl, MyWindow:, NewDashSleepID, % modDashSleep
     UpdateStatusEdit("Dash Wait") ;GuiControl, MyWindow:, gloopID, Dash Wait 
     While (ReadTimeScaleMultiplier(1) < DashSpeed AND ElapsedTime < modDashSleep)
     {
@@ -948,14 +1040,6 @@ DoDashWait()
         ElapsedTime := UpdateElapsedTime(StartTime)
         UpdateStatTimers()
     }
-    if (ReadQuestRemaining(1))
-    FinishZone()
-    if (gbSpamUlts)
-    {
-        DoUlts()
-    }
-    DirectedInput("g")
-    SetFormation(1)
     return
 }
 
@@ -981,7 +1065,7 @@ DirectedInput(s)
     SafetyCheck()
     ControlFocus,, ahk_exe IdleDragons.exe
     ControlSend,, {Blind}%s%, ahk_exe IdleDragons.exe
-    Sleep, 25  ; Sleep for 25 sec formerly ScriptSpeed global, not used elsewhere.
+    Sleep, 25  ; Sleep for 25 sec formerly ScriptSpeed global, not used elsewhere. - gScriptSpeed was intended as a user setting
 }
 
 SetFormation(gLevel_Number)
@@ -990,7 +1074,7 @@ SetFormation(gLevel_Number)
     {
         DirectedInput("e")
     }
-    else if (!ReadQuestRemaining(1) AND ReadTransitioning(1) AND gbCancelAnim)
+    else if (!ReadQuestRemaining(1) AND ReadTransitioning(1))
     {
         DirectedInput("e")
         StartTime := A_TickCount
@@ -1027,10 +1111,10 @@ LoadingZoneREV()
     ;ReadMonstersSpawned was added in case monsters were spawned before game allowed inputs, an issue when spawn speed is very high. Might be creating more problems.
     ;Offline Progress appears to read monsters spawning, so this entire function can be bypassed creating issues with stack restart.
     ;while (ReadChampBenchedByID(1,, 47) != 1 AND ElapsedTime < 60000 AND ReadMonstersSpawned(1) < 2)
-    ;shouldn't be an issue if monsters spawn, shandie is supposed to be on bench. Zone will kill monsters no problem. Higher zones she should be leveled.
-    while (ReadChampBenchedByID(1,, 47) != 1 AND ElapsedTime < 60000)
+    ;shouldn't be an issue if monsters spawn, Briv is supposed to be on bench. Zone will kill monsters no problem. Higher zones she should be leveled.
+    while (ReadChampBenchedByID(1,, 58) != 1 AND ElapsedTime < 60000)
     {
-        DirectedInput("w{F6}w")
+        DirectedInput("e{F5}e")
         ElapsedTime := UpdateElapsedTime(StartTime)
         UpdateStatTimers()
     }
@@ -1041,10 +1125,10 @@ LoadingZoneREV()
     StartTime := A_TickCount
     ElapsedTime := 0
     UpdateStatusEdit("Confirming Zone Load (REV)") ;GuiControl, MyWindow:, gloopID, Confirming Zone Load
-    ;need a longer sleep since offline progress should read shandie benched.
-    while (ReadChampBenchedByID(1,, 47) != 0 AND ElapsedTime < 60000)
+    ;need a longer sleep since offline progress should read Briv benched.
+    while (ReadChampBenchedByID(1,, 58) != 0 AND ElapsedTime < 30000)
     {
-        DirectedInput("q{F6}")
+        DirectedInput("w{F5}w")
         ElapsedTime := UpdateElapsedTime(StartTime)
         UpdateStatTimers()
     }
@@ -1070,7 +1154,7 @@ LoadingZoneOne()
     StartTime := A_TickCount
     ElapsedTime := 0
     UpdateStatusEdit("Confirming Zone Load (One)") ;GuiControl, MyWindow:, gloopID, Confirming Zone Load
-    while (ReadChampBenchedByID(1,, 58) != 0 AND ElapsedTime < 60000)
+    while (ReadChampBenchedByID(1,, 58) != 1 AND ElapsedTime < 60000)
     {
         DirectedInput("e{F5}e")
         ElapsedTime := UpdateElapsedTime(StartTime)
@@ -1082,40 +1166,51 @@ LoadingZoneOne()
     }
 }
 
-CheckSetUpREV()  ; TODO: get rid of this, do Core area check somewhere other than the start of the run?
+CheckSetUpREV()  ; TODO: not sure if from Cantrow or newest Mike - but you already replaced it in GemFarm with VerifyChamp. so remove?
 {
-    ; TODO: this CheckSetUpREV() is strange thing to do right at the start of GemFarm(), once?
-    ;find core target reset area so script does not try and Briv stack before a modron reset happens.
-    ;gCoreTargetArea := ReadCoreTargetArea(1)
-    ;confirm target area has been read
-    if (!gModronResetCheckEnabled)
+    ;Check if Briv is in 'Q' formation.
+    StartTime := A_TickCount
+    ElapsedTime := 0
+    slot := 0
+    UpdateStatusEdit("Looking for Briv")
+    Loop, 5
     {
-        gCoreTargetArea := 999
+        DirectedInput("q{F5}q")
+        sleep, 100
+        if (ReadChampBenchedByID(1,, 58) = 0)
+          break
     }
-    Else
+    while (ReadChampBenchedByID(1,, 58) != 0 AND ElapsedTime < 10000)
     {
-        While (!gCoreTargetArea)
-        {
-            MsgBox, 2,, Script cannot find Modron Reset Area.
-            IfMsgBox, Abort
-            {
-                Return, 1
-            }
-            IfMsgBox, Retry
-            {
-                ;gCoreTargetArea := ReadCoreTargetArea(1)
-            }
-            IfMsgBox, ignore
-            {
-                gCoreTargetArea := 999
-            }
-        }
+        DirectedInput("q{F5}q")
+        ElapsedTime := UpdateElapsedTime(StartTime)
+        UpdateStatTimers()
     }
-    ;will need to add more here eventually ; TODO: what is this?
-    if (gCoreTargetArea < gAreaLow)
+    if (ReadChampBenchedByID(1,, 58) = 1)
     {
-        gCoreTargetArea := 999
-    }   
+        MsgBox, Couldn't find Briv in "Q" formation. Check saved formations. Ending Gem Farm.
+        Return, 1
+    }
+    ;Check if Briv is not in 'E' formation.
+    StartTime := A_TickCount
+    ElapsedTime := 0
+    UpdateStatusEdit("Looking for no Briv")
+    while (ReadChampBenchedByID(1,, 58) != 1 AND ElapsedTime < 10000)
+    {
+        DirectedInput("e")
+        ElapsedTime := UpdateElapsedTime(StartTime)
+        UpdateStatTimers()
+    }
+    if (ReadChampBenchedByID(1,, 58) = 0)
+    {
+        MsgBox, Briv is in "E" formation. Check Settings. Ending Gem Farm.
+        return, 1
+    }
+    if (advtoload < 1)
+    {
+        MsgBox, Please load into a valid adventure and restart. Ending Gem Farm.
+        return, 1
+    }
     return, 0
 }
 
@@ -1133,15 +1228,21 @@ GetNumStacksFarmed()
 {
     ; Read the number of stacks from memory
     gStackCountSB := ReadSBStacks(1)
-    ; We've been having issues related to stacks, so we'll read it again every quarter second
-    ; until it matches what we read the first time around.  NOTE: Potential to endless loop 
-    ; here, please provide feedback to Zee(ValorZee) in Discord if using this code
-    while (ReadSBStacks(1) != gStackCountSB)
-    {
-        Sleep 250
+    ; part of huans early stacking addition
+    ; he mentioned this breaking "failed stack recovery" but had a later update:
+    ; https://canary.discord.com/channels/357247482247380994/474639469916454922/888977817214283786
+    ; probably needs separat update/ merge from his github: https://github.com/huancz/Idle-Champions/tree/early_stacking
+    ; prevent SB stacks going backwards. Situation
+    ; - game is the middle of resetting (normal modron reset)
+    ; - script reads level 780 or whatever (above stacking zone), and SB stack count of 0 ...
+    ; - ... which makes it trigger stackrestart while modron reset is in progress, and finishing it at level 1
+    if (gStackCountSB >= gHighestStackCountSB) {
+        gHighestStackCountSB := gStackCountSB
+    } else {
+        gStackCountSB := gHighestStackCountSB
     }
-    gStackCountH := ReadHasteStacks(1) ; TODO: may need to experiment with this read too
-    if (gRestartStackTime) 
+    gStackCountH := ReadHasteStacks(1)
+    if (gRestartStackTime and not gDashAfterStack)
     {
         return gStackCountH + gStackCountSB
     } 
@@ -1153,6 +1254,12 @@ GetNumStacksFarmed()
         ; would happen after every jump.
         ; Thus, we use a static 47 instead of using the actual haste stacks
         ; with the assumption that we'll be at minimum stacks after a reset.
+        ;
+        ; The same behaviour is needed when stacking early - Briv is supposed to eat most
+        ; of current gStackCountH before the run is over. Using sum of both values sometimes
+        ; skips the intended stacking zone because at the time the sum is still high
+        ; enough, Then decide to stack few hundreds levels later -> most of the run is
+        ; without dash, and the minute for dashwait is wasted on last 200 or 300 levels.
         return gStackCountSB + 47
     }
 }
@@ -1182,7 +1289,7 @@ StackRestart()
     CloseIC()
     StartTime := A_TickCount
     ElapsedTime := 0
-    UpdateStatusEdit("Stack Slee - ") ;GuiControl, MyWindow:, gloopID, Stack `Sleep
+    UpdateStatusEdit("Stack Slee - ") ;GuiControl, MyWindow:, gloopID, Stack Sleep
     if (gDoChests)
     {
         DoChests()
@@ -1195,7 +1302,7 @@ StackRestart()
         ElapsedTime := UpdateElapsedTime(StartTime)
         UpdateStatTimers()
     }
-    UpdateStatusEdit("Finish Stack Sleep for " . ElapsedTime/1000 . " seconds") ;GuiControl, MyWindow:, gloopID, Finish Stack `Sleep: %ElapsedTime%
+    UpdateStatusEdit("Finish Stack Sleep for " . ElapsedTime/1000 . " seconds") ;GuiControl, MyWindow:, gloopID, Finish Stack Sleep: %ElapsedTime%
     SafetyCheck()
     ; Game may save "q" formation before restarting, creating an endless restart loop. LoadinZone() should 
     ; bring "w" back before triggering a second restart, but monsters could spawn before it does.
@@ -1246,12 +1353,37 @@ StackFarm()
         DirectedInput("{Left}")
     }
     if gRestartStackTime
+    {
         StackRestart()
-    ;stacks := GetNumStacksFarmed()
-    ;if (stacks < gSBTargetStacks)
-    if (GetNumStacksFarmed() < gSBTargetStacks)
-        StackNormal()
+    }
+    stacks := GetNumStacksFarmed()
+    if (gStackCountH < 50)
+    {
+        ; No remaining haste stacks can happen if previous run ended with failed stacking (ate the SB stacks without giving haste stacks).
+        ; In such case there is no point doing whatever we were going to do (wait for dash, spam ults), main loop will restart the adventure
+        ; as soon as we return from here.
+        return
+    }
+
+    if (stacks < gSBTargetStacks) {
+        ; StackNormal()
+
+        ; try again on next level. In case we are in early stacking mode, this skips dash wait too until we have all the needed stacks
+        DirectedInput("g")
+        return
+    }
+
+    if (gDashAfterStack)
+    {
+        DirectedInput("q")
+        DoDashWait()
+    }
+
     gPrevLevelTime := A_TickCount
+    if (gUlts)
+    {
+        DoUlts()
+    }
     DirectedInput("g")
 }
 
@@ -1268,22 +1400,27 @@ UpdateStartLoopStats(gLevel_Number)
     }
     if (gTotal_RunCount)
     {
-        gPrevRunTime := round((A_TickCount - gRunStartTime) / 60000, 2)
-        GuiControl, MyWindow:, gPrevRunTimeID, % gPrevRunTime
+        gPrevRunTime := TimePoint
+        gPrevRunTime += (A_TickCount - gRunStartTime)/1000,Seconds
+        FormatTime gPrevRunTimeF, %gPrevRunTime%, HH:mm:ss
+        GuiControl, MyWindow:, gPrevRunTimeID, % gPrevRunTimeF
         if (gSlowRunTime < gPrevRunTime AND !gStackFail)
         {
             gSlowRunTime := gPrevRunTime
-            GuiControl, MyWindow:, gSlowRunTimeID, % gSlowRunTime
+            gSlowRunTimeF := gPrevRunTimeF
+            GuiControl, MyWindow:, gSlowRunTimeID, % gSlowRunTimeF
         }
-        if (gFastRunTime > gPrevRunTime AND !gStackFail)
+        if (gFastRunTime >= gPrevRunTime AND !gStackFail)
         {
             gFastRunTime := gPrevRunTime
-            GuiControl, MyWindow:, gFastRunTimeID, % gFastRunTime
+            gFastRunTimeF := gPrevRunTimeF
+            GuiControl, MyWindow:, gFastRunTimeID, % gFastRunTimeF
         }
         if (gStackFail)
         {
             gFailRunTime := gPrevRunTime
-            GuiControl, MyWindow:, gFailRunTimeID, % gFailRunTime
+            gFailRunTimeF := gPrevRunTimeF
+            GuiControl, MyWindow:, gFailRunTimeID, % gFailRunTimeF
             if (gStackFail = 1)
             {
                 ++gFailedStacking
@@ -1295,9 +1432,11 @@ UpdateStartLoopStats(gLevel_Number)
                 GuiControl, MyWindow:, gFailedStackConvID, % gFailedStackConv
             }
         }
-        dtTotalTime := (A_TickCount - gStartTime) / 3600000
-        gAvgRunTime := Round((dtTotalTime / gTotal_RunCount) * 60, 2)
-        GuiControl, MyWindow:, gAvgRunTimeID, % gAvgRunTime
+        dtTotalTime := (A_TickCount - gStartTime)/1000,Seconds
+        gAvgRunTime := TimePoint
+        gAvgRunTime += Round((dtTotalTime / gTotal_RunCount), 2),Seconds
+        FormatTime gAvgRunTimeF, %gAvgRunTime%, HH:mm:ss
+        GuiControl, MyWindow:, gAvgRunTimeID, % gAvgRunTimeF
         dtTotalTime := (A_TickCount - gStartTime) / 3600000
         TotalBosses := (ReadCoreXP(1) - gCoreXPStart) / 5
         gbossesPhr := Round(TotalBosses / dtTotalTime, 2)
@@ -1335,22 +1474,29 @@ SetLastZone(znum)
 UpdateStatTimers()
 {
     ReleaseStuckKeys()
-    dtCurrentRunTime := Round((A_TickCount - gRunStartTime) / 60000, 2)
-    GuiControl, MyWindow:, dtCurrentRunTimeID, % dtCurrentRunTime
-    dtTotalTime := Round((A_TickCount - gStartTime) / 3600000, 2)
-    GuiControl, MyWindow:, dtTotalTimeID, % dtTotalTime
+    dtCurrentRunTime := TimePoint
+    dtCurrentRunTime += (A_TickCount - gRunStartTime)/1000,Seconds
+    FormatTime dtCurrentRunTimeF, %dtCurrentRunTime%, HH:mm:ss
+    GuiControl, MyWindow:, dtCurrentRunTimeID, % dtCurrentRunTimeF
+    dtTotalTime := TimePoint
+    dtTotalTime += (A_TickCount - gStartTime)/1000,Seconds
+    FormatTime dtTotalTimeF, %dtTotalTime%, HH:mm:ss
+    GuiControl, MyWindow:, dtTotalTimeID, % dtTotalTimeF
     GetZoneTime() 
 }
 
 GetZoneTime()
 {
-    g_ZoneTime := Round((A_TickCount - gPrevLevelTime) / 1000, 2)
-    GuiControl, MyWindow:, ZoneTimeID, % g_ZoneTime
-    return g_ZoneTime
+    g_ZoneTime := TimePoint
+    g_ZoneTime += (A_TickCount - gPrevLevelTime)/1000,Seconds
+    FormatTime g_ZoneTimeF, %g_ZoneTime%, HH:mm:ss
+    GuiControl, MyWindow:, ZoneTimeID, % g_ZoneTimeF
+    return g_ZoneTimeF
 }
 
 UpdateStatusEdit(msg)
 {
+    SB_SetText("`t" msg, 2, 2)
     GuiControl, MyWindow:, gLoopID, %msg%  ; %A_Hour%:%A_Min%:%A_Sec%.%A_MSec%
     FormatTime, CurrentTime, , yyyyMMdd HH:mm:ss
     TSmsg := CurrentTime . " " . msg . "`r`n"
@@ -1383,9 +1529,10 @@ VerifyChamp(strGUI, strInit, champID, benched)  ; benched 1, 0 not benched
 
 GemFarm() 
 {  
-    ReleaseStuckKeys() ; Strange, why here? it happens once per script execution
+    ReleaseStuckKeys() ; Strange, why here? it happens once per script execution - just for releasing modifier keys, probably useful in most functions just to execute it
     OpenProcess()      ; OpenProcess makes sense as a thing that happens at the start of execution
     ModuleBaseAddress()
+    SetLevelingKeyVar()
     ;not sure why this one is here, commented out for now.
     ;GetUserDetails()
     strNow := "`t" . A_Hour . ":" . A_Min . ":" . A_Sec . ":" . A_MSec
@@ -1426,7 +1573,7 @@ GemFarm()
         ;Edit_Prepend(hZLoop, TSmsg)          
 
         gLevel_Number := ReadCurrentZone(1)
-        DirectedInput("``")
+        ; DirectedInput("``")           	        ; spamming key all over
         SetFormation(gLevel_Number)
 
         ;WinActivate Idle Champions
@@ -1612,16 +1759,42 @@ EndAdventure(restartdelay_ms = 1)   ; delay in milliseconds before readString()
     RestartGame(true, true)  ; do both the restart and the safety check
 }
 
+SetLevelingKeyVar()
+{
+    GuiControl, +AltSubmit, CDLevelingKeyDDL
+    GuiControlGet, gCDLevelingKeyID ,, CDLevelingKeyDDL
+    GuiControl, -AltSubmit, CDLevelingKeyDDL
+    if (gCDLevelingKeyID = 1)
+    {
+        if (gb100xCDLev)
+        {
+            gLevelKeyVar := "{Ctrl down}``{Ctrl up}"
+        }
+        else 
+        {
+            gLevelKeyVar := "``"
+        }
+    }
+    else if (gCDLevelingKeyID = 2)
+    {
+        if (gb100xCDLev)
+        {
+            gLevelKeyVar := "{Ctrl down}{SC027}{Ctrl up}"
+        }
+        else
+        {
+            gLevelKeyVar := "{SC027}"
+        }
+    }
+}
+
 StuffToSpam(SendRight := 1, gLevel_Number := 1, hew := 1, formation := "")
 {
     ReleaseStuckKeys()
     var :=
     if (SendRight)
     var := "{Right}"
-    if (gb100xCDLev)
-    var := var "{Ctrl down}``{Ctrl up}"
-    else if (gbCDLeveling)
-    var := var "``"
+    var := var gLevelKeyVar
     if (gStopLevZone > gLevel_Number)
     var := var gFKeys
     if (gHewUlt AND hew)
@@ -1685,3 +1858,8 @@ DoChests()
     GuiControl, MyWindow:, gSCGoldsOpenedID, %var%
     Return
 }
+
+; (stolen) debugging tools
++esc::exitapp
++f11::listvars
++f12::reload
